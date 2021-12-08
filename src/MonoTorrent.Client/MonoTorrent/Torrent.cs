@@ -30,6 +30,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
@@ -182,7 +183,7 @@ namespace MonoTorrent
             Pieces = new Hashes (data, data.Length / 20);
         }
 
-        IList<TorrentFile> LoadTorrentFiles (BEncodedList list)
+        static IList<TorrentFile> LoadTorrentFilesV1 (BEncodedList list, int pieceLength)
         {
             var sb = new StringBuilder (32);
 
@@ -239,12 +240,38 @@ namespace MonoTorrent
 
                 PathValidator.Validate (path);
                 files.Add ((path, length, md5sum, ed2k, sha1));
-                Size += length;
             }
 
-            return Array.AsReadOnly (TorrentFile.Create (PieceLength, files.ToArray ()));
+            return Array.AsReadOnly (TorrentFile.Create (pieceLength, files.ToArray ()));
         }
 
+        internal static void LoadTorrentFilesV2 (string key, BEncodedDictionary data, List<TorrentFile> files, int pieceLength, ref int totalPieces, string path)
+        {
+            if (key == "") {
+                var length = ((BEncodedNumber) data["length"]).Number;
+                if (length == 0) {
+                    files.Add (new TorrentFile (path, length, 0, 0, 0, default, default, default));
+                } else {
+                    totalPieces++;
+                    var piecesRoot = data.TryGetValue ("pieces root", out var value) ? ((BEncodedString) value).AsMemory () : ReadOnlyMemory<byte>.Empty;
+                    files.Add (new TorrentFile (path, length, totalPieces, totalPieces + (int) (length / pieceLength), pieceLength * totalPieces, default, default, default, piecesRoot));
+                    totalPieces = files.Last ().EndPieceIndex;
+                }
+            } else {
+                foreach (var entry in data) {
+                    LoadTorrentFilesV2 (entry.Key.Text, (BEncodedDictionary) entry.Value, files, pieceLength, ref totalPieces, Path.Combine (path, key));
+                }
+            }
+        }
+
+        internal static IList<TorrentFile> LoadTorrentFilesV2 (BEncodedDictionary fileTree, int pieceLength)
+        {
+            var files = new List<TorrentFile> ();
+            int totalPieces = -1;
+            foreach (var entry in fileTree)
+                LoadTorrentFilesV2 (entry.Key.Text, (BEncodedDictionary) entry.Value, files, pieceLength, ref totalPieces, "");
+            return Array.AsReadOnly (files.ToArray ());
+        }
 
         /// <summary>
         /// This method is called internally to load the information found within the "Info" section
@@ -255,7 +282,23 @@ namespace MonoTorrent
         {
             InfoMetadata = dictionary.Encode ();
             PieceLength = int.Parse (dictionary["piece length"].ToString ());
-            LoadHashPieces (((BEncodedString) dictionary["pieces"]).AsMemory ());
+            bool isV1 = false;
+            bool isV2 = false;
+
+            if (dictionary.TryGetValue ("meta version", out BEncodedValue metaVersion)) {
+                if (metaVersion is BEncodedNumber metadataVersion) {
+                    isV1 = metadataVersion.Number == 1;
+                    isV2 = metadataVersion.Number == 2;
+                }
+            } else {
+                isV1 = true;
+            }
+
+            if (!isV1 && !isV2)
+                throw new TorrentException ("Unsupported torrent version. Only v1 and v2 torrents are supported");
+
+            if (isV1)
+                LoadHashPieces (((BEncodedString) dictionary["pieces"]).AsMemory ());
 
             foreach (KeyValuePair<BEncodedString, BEncodedValue> keypair in dictionary) {
                 switch (keypair.Key.Text) {
@@ -292,9 +335,16 @@ namespace MonoTorrent
                         break;
 
                     case ("files"):
-                        Files = LoadTorrentFiles ((BEncodedList) keypair.Value);
+                        // This is the list of files using the v1 torrent format.
+                        // Only load if we have not processed filesv2
+                        if (Files == null)
+                            Files = LoadTorrentFilesV1 ((BEncodedList) keypair.Value, PieceLength);
                         break;
 
+                    case "file tree":
+                        // This is the list of files using the v2 torrent format.
+                        Files = LoadTorrentFilesV2 ((BEncodedDictionary) dictionary["file tree"], PieceLength);
+                        break;
                     case ("name.utf-8"):
                         if (keypair.Value.ToString ().Length > 0)
                             Name = keypair.Value.ToString ();
@@ -320,7 +370,10 @@ namespace MonoTorrent
                 }
             }
 
-            if (Files == null)   // Not a multi-file torrent
+            if (Files != null)
+                Size = Files.Select (f => f.Length).Sum ();
+
+            if (Files == null && isV1)   // Not a multi-file torrent
             {
                 long length = long.Parse (dictionary["length"].ToString ());
                 Size = length;
