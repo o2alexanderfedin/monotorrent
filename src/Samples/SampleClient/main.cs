@@ -1,10 +1,9 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
-
+using Humanizer;
 using MonoTorrent;
 using MonoTorrent.Client;
 
@@ -42,7 +41,7 @@ namespace ClientSample
                 // Automatically save 'FastResume' data when TorrentManager.StopAsync is invoked, automatically load it
                 // before hash checking the torrent. Fast Resume data will be loaded as part of 'engine.AddAsync' if
                 // torrent metadata is available. Otherwise, if a magnetlink is used to download a torrent, fast resume
-                // data will be loaded after the metadata has been downloaded. 
+                // data will be loaded after the metadata has been downloaded.
                 AutoSaveLoadFastResume = true,
 
                 // If a MagnetLink is used to download a torrent, the engine will try to load a copy of the metadata
@@ -65,9 +64,11 @@ namespace ClientSample
                 //HttpStreamingPrefix = $"http://*.mydomain.com:{httpListeningPort}/"
 
                 // For now just bind to localhost.
-                HttpStreamingPrefix = $"http://127.0.0.1:{httpListeningPort}/"
+                HttpStreamingPrefix = $"http://127.0.0.1:{httpListeningPort}/",
+                ConnectionTimeout = 30.Seconds()
             };
-            using var engine = new ClientEngine (settingBuilder.ToSettings ());
+            var settings = settingBuilder.ToSettings ();
+            using var engine = new ClientEngine (settings);
 
             Task task;
             if (args.Length == 1 && args[0] == "--vlc") {
