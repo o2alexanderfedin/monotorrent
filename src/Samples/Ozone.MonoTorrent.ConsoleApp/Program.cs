@@ -37,9 +37,14 @@ public class Program1
             {
                 switch (Console.ReadKey())
                 {
+                    case { Key: ConsoleKey.H or ConsoleKey.Help }: {
+                        ShowHelp();
+                        break;
+                    }
+
                     case { Key: ConsoleKey.Q }:
                     {
-                        cancellationSource.Cancel();
+                        await cancellationSource.CancelAsync();
                         break;
                     }
 
@@ -71,7 +76,7 @@ public class Program1
                             StoreSHA1 = true,
                             Publisher = "Oxygen",
                         };
-                        torrentCreator.Create(torrentFileSource, sharedFileTorrentFile);
+                        await torrentCreator.CreateAsync(torrentFileSource, sharedFileTorrentFile, cancellationSource.Token);
                         var torrent = await engine.AddAsync(sharedFileTorrentFile, saveDirectory);
                         await torrent.StartAsync();
                         Console.WriteLine(torrent.Name);
@@ -95,9 +100,10 @@ public class Program1
                     case { Key: ConsoleKey.M }:
                     {
                         var peers = await engine
-                            .GetPeersAsync(infoHashToAnnounce)
+                            .GetPeersAsync(infoHashToAnnounce, cancellationSource.Token)
                             .Take(1)
-                            .ToArrayAsync();
+                            .ToArrayAsync(cancellationToken: cancellationSource.Token)
+                            .ConfigureAwait(false);
                         DumpPeers(infoHashToAnnounce, peers);
                         break;
                     }
@@ -119,6 +125,18 @@ public class Program1
 
         await engine.SaveStateAsync(settingsFile);
         await engine.StopAllAsync();
+    }
+
+    private static void ShowHelp()
+    {
+        Console.WriteLine(
+            """
+            Q: Quit/Exit
+            F: Download predefined torrents
+            S: Seed random hash
+            L: Seed random magnet link to the random hash
+            M: Lookup peers for the random hash
+            """);
     }
 
     static string SettingsFile() => Path.Combine(AppDir(), "settings.ben");

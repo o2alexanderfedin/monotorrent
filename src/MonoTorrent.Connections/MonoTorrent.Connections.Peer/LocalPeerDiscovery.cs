@@ -13,10 +13,10 @@
 // distribute, sublicense, and/or sell copies of the Software, and to
 // permit persons to whom the Software is furnished to do so, subject to
 // the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be
 // included in all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 // EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 // MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -139,11 +139,18 @@ namespace MonoTorrent.Connections.Peer
                 byte[] data = Encoding.ASCII.GetBytes (message);
 
                 foreach (var nic in nics) {
-                    try {
-                        sendingClient.Client.SetSocketOption (SocketOptionLevel.IP, SocketOptionName.MulticastInterface, IPAddress.HostToNetworkOrder (nic.GetIPProperties ().GetIPv4Properties ().Index));
-                        await sendingClient.SendAsync (data, data.Length, MulticastAddressV4).ConfigureAwait (false);
-                    } catch {
-                        // If data can't be sent, just ignore the error
+                    for (var i = 0; i < 2; ++i) {
+                        try {
+                            sendingClient.Client.SetSocketOption (SocketOptionLevel.IP,
+                                SocketOptionName.MulticastInterface,
+                                IPAddress.HostToNetworkOrder (nic.GetIPProperties ().GetIPv4Properties ().Index));
+                            await sendingClient.SendAsync (data, data.Length, MulticastAddressV4)
+                                .ConfigureAwait (false);
+                        } catch {
+                            // If data can't be sent, just ignore the error
+                            if (i > 0)
+                                throw;
+                        }
                     }
                 }
             }

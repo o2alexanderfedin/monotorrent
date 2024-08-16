@@ -227,7 +227,7 @@ namespace MonoTorrent.Connections.Tracker
             ReadOnlyMemory<byte> buffer = msg.Encode ();
             try {
                 do {
-                    client.Send (buffer, buffer.Length);
+                    client.Send (buffer.Span);
                     await Task.Delay (RetryDelay, token);
                 }
                 while (!token.IsCancellationRequested);

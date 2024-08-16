@@ -38,7 +38,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-
+using Microsoft.VisualStudio.Threading;
 using MonoTorrent.BEncoding;
 using MonoTorrent.Client.Listeners;
 using MonoTorrent.Client.RateLimiters;
@@ -48,8 +48,13 @@ using MonoTorrent.Dht;
 using MonoTorrent.Logging;
 using MonoTorrent.PieceWriter;
 using MonoTorrent.PortForwarding;
-
 using ReusableTasks;
+// ReSharper disable UnusedMember.Global
+// ReSharper disable HeapView.ObjectAllocation.Possible
+// ReSharper disable HeapView.DelegateAllocation
+// ReSharper disable HeapView.ClosureAllocation
+// ReSharper disable MemberCanBePrivate.Global
+// ReSharper disable HeapView.ObjectAllocation
 
 namespace MonoTorrent.Client
 {
@@ -221,11 +226,17 @@ namespace MonoTorrent.Client
 
         public IDht Dht { get; private set; }
 
-        internal IDhtEngine DhtEngine { get; private set; }
+        public IDhtEngine DhtEngine { get; private set; }
 
         IDhtListener DhtListener { get; set; }
 
         public DiskManager DiskManager { get; }
+
+        public event EventHandler<PeersFoundEventArgs> PeersFound
+        {
+            add => DhtEngine.PeersFound += value;
+            remove => DhtEngine.PeersFound -= value;
+        }
 
         public bool Disposed { get; private set; }
 
@@ -233,7 +244,7 @@ namespace MonoTorrent.Client
 
         internal IList<IPeerConnectionListener> PeerListeners { get; set; } = Array.Empty<IPeerConnectionListener> ();
 
-        internal ILocalPeerDiscovery LocalPeerDiscovery { get; private set; }
+        public ILocalPeerDiscovery LocalPeerDiscovery { get; private set; }
 
         /// <summary>
         /// When <see cref="EngineSettings.AllowPortForwarding"/> is set to true, this will return a representation
@@ -732,6 +743,90 @@ namespace MonoTorrent.Client
                 if (manager.InfoHashes.V2 != null) {
                     DhtEngine.Announce (manager.InfoHashes.V2.Truncate (), GetOverrideOrActualListenPort ("ipv4") ?? -1);
                     DhtEngine.GetPeers (manager.InfoHashes.V2.Truncate ());
+                }
+            }
+        }
+
+        public async Task AnnounceAndGetPeers(params InfoHash?[] infoHashes)
+        {
+            await AnnounceAsync(infoHashes);
+            GetPeers(infoHashes);
+        }
+
+        public async Task AnnounceAsync (params InfoHash?[] infoHashes)
+        {
+            await AnnounceAsync (infoHashes.AsEnumerable ());
+        }
+
+        public async Task AnnounceAsync (IEnumerable<InfoHash?> infoHashes)
+        {
+            // await Task.Yield ();
+
+            foreach (var infoHash in infoHashes)
+            {
+                if (infoHash is null) continue;
+
+                foreach (var listener in PeerListeners)
+                {
+                    if (listener.LocalEndPoint is null) continue;
+
+                    await LocalPeerDiscovery.Announce (infoHash, listener.LocalEndPoint);
+                    DhtEngine.Announce(infoHash, listener.LocalEndPoint.Port);
+                }
+            }
+        }
+
+        public void GetPeers(params InfoHash?[] infoHashes)
+        {
+            foreach (var infoHash in infoHashes)
+            {
+                if (infoHash is null) continue;
+                DhtEngine.GetPeers(infoHash.Truncate());
+            }
+        }
+
+        public async IAsyncEnumerable<PeerInfo> GetPeersAsync(
+            InfoHash infoHash,
+            [EnumeratorCancellation] CancellationToken cancellation = default
+        )
+        {
+            var q = new AsyncQueue<PeerInfo>();
+            PeersFound += OnPeersFound;
+            try
+            {
+                DhtEngine.GetPeers(infoHash.Truncate());
+                while (!cancellation.IsCancellationRequested)
+                {
+                    while (q.TryDequeue(out var peer1))
+                    {
+                        yield return peer1;
+                    }
+
+                    PeerInfo peer2;
+                    try
+                    {
+                        peer2 = await q.DequeueAsync(cancellation);
+                    }
+                    catch (TaskCanceledException error)
+                    {
+                        yield break;
+                    }
+                    yield return peer2;
+                }
+            }
+            finally
+            {
+                PeersFound -= OnPeersFound;
+            }
+
+            yield break;
+
+            void OnPeersFound(object? sender, PeersFoundEventArgs e)
+            {
+                if (e.InfoHash != infoHash) return;
+                foreach (var peer in e.Peers)
+                {
+                    q.Enqueue(peer);
                 }
             }
         }

@@ -13,10 +13,10 @@
 // distribute, sublicense, and/or sell copies of the Software, and to
 // permit persons to whom the Software is furnished to do so, subject to
 // the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be
 // included in all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 // EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 // MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -33,10 +33,10 @@ namespace MonoTorrent.Messages.Peer
 {
     public class PieceMessage : PeerMessage, IRentable
     {
-        internal static MemoryPool BufferPool = MemoryPool.Default;
+        private static MemoryPool BufferPool => MemoryPool.Default;
 
         public const byte MessageId = 7;
-        const int messageLength = 9;
+        private const int MessageLength = 9;
 
         /// <summary>
         /// The data associated with this block
@@ -53,7 +53,7 @@ namespace MonoTorrent.Messages.Peer
         /// <summary>
         /// The length of the message in bytes
         /// </summary>
-        public override int ByteLength => messageLength + RequestLength + 4;
+        public override int ByteLength => MessageLength + RequestLength + 4;
 
         /// <summary>
         /// The index of the piece which was requested
@@ -97,7 +97,7 @@ namespace MonoTorrent.Messages.Peer
         {
             int origLength = buffer.Length;
 
-            Write (ref buffer, messageLength + RequestLength);
+            Write (ref buffer, MessageLength + RequestLength);
             Write (ref buffer, MessageId);
             Write (ref buffer, PieceIndex);
             Write (ref buffer, StartOffset);
@@ -135,7 +135,7 @@ namespace MonoTorrent.Messages.Peer
             if (!Data.IsEmpty)
                 throw new Exception ("Der");
             (DataReleaser, Data) = value;
-        } 
+        }
 
         public override string ToString ()
         {

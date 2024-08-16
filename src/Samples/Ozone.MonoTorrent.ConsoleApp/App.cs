@@ -1,16 +1,18 @@
+using System.Reflection;
+
 using Humanizer;
 using MonoTorrent;
 using MonoTorrent.Client;
 using Ozone.MonoTorrent.ConsoleApp;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-
+// ReSharper disable HeapView.ObjectAllocation.Possible
+// ReSharper disable HeapView.DelegateAllocation
+// ReSharper disable AccessToModifiedClosure
+// ReSharper disable AccessToDisposedClosure
+// ReSharper disable AssignNullToNotNullAttribute
+// ReSharper disable UseObjectOrCollectionInitializer
+// ReSharper disable HeapView.ClosureAllocation
 // ReSharper disable HeapView.ObjectAllocation
 // ReSharper disable HeapView.ObjectAllocation.Evident
-
-Console.WriteLine("Hello from MonoTorrent!");
 
 var hashToAnnounce = new byte[20];
 Random.Shared.NextBytes(hashToAnnounce);
@@ -25,44 +27,66 @@ var settingsFile = SettingsFile();
 var saveDirectory = Path.Combine(AppDir(), "incoming");
 using var engine = await BuildEngine(settingsFile);
 
+engine.PeersFound += (s, e) => Console.WriteLine ($"Engine.PeersFound | For hash [{e.InfoHash}] {e.Peers.Count} peers were found.");
+engine.LocalPeerDiscovery.PeerFound += (s, e) => Console.WriteLine ($"Engine.LocalPeerDiscovery.PeerFound | For hash [{e.InfoHash}] {e.Uri} peer was found.");
+engine.DhtEngine.PeersFound += (s, e) => Console.WriteLine ($"Engine.DhtEngine.PeersFound | For hash [{e.InfoHash}] {e.Peers.Count} peers were found.");
+
 await engine.StartAllAsync();
 
-Console.WriteLine("Press 'X' to exit...");
 using var cancellationSource = new CancellationTokenSource();
 
-var actions = new Dictionary<ConsoleKey, Func<Task>>
-{
-    { ConsoleKey.Q, async () => { cancellationSource.Cancel(); await Task.CompletedTask; } },
-    { ConsoleKey.F, () => HandleFKeyAsync(engine, saveDirectory) },
-    { ConsoleKey.S, () => HandleSKeyAsync(engine, torrentFileSource, sharedFileTorrentFile, saveDirectory) },
-    { ConsoleKey.L, () => HandleLKeyAsync(engine, infoHashToAnnounce, saveDirectory) },
-    { ConsoleKey.M, () => HandleMKeyAsync(engine, infoHashToAnnounce) }
-};
-
-while (!cancellationSource.IsCancellationRequested)
-{
-    if (Console.KeyAvailable)
-    {
-        var key = Console.ReadKey(true).Key;
-        if (actions.TryGetValue(key, out var action))
-        {
-            await action();
-        }
+Dictionary<ConsoleKey, (int i, string title, ConsoleKey key, Func<Task> func)> actions = default!;
+actions = new[] {
+        [Action ("Download Torrents", ConsoleKey.D)] () => HandleStartDownloadTorrentsAsync (engine, saveDirectory),
+        [Action ("Download Single Torrent", ConsoleKey.T)] () => HandleStartDownloadTorrentAsync (engine, torrentFileSource, sharedFileTorrentFile, saveDirectory),
+        [Action ("Save Nodes", ConsoleKey.N)] () => HandleSaveNodesAsync (engine, AppDir ()),
+        [Action ("Announce Hash", ConsoleKey.A)] () => HandleAnnounceInfoHashAsync (engine, infoHashToAnnounce),
+        [Action ("Lookup Hash", ConsoleKey.L)] () => HandleLookupInfoHashAsync (engine, infoHashToAnnounce),
+        [Action] () => Task.CompletedTask,
+        [Action ("Help", ConsoleKey.F1)] () => ShowHelpAsync (),
+        [Action ("Exit", ConsoleKey.Q)] () => SignalStopAsync (cancellationSource),
     }
+    .SelectMany (func => func.GetMethodInfo ().GetCustomAttributes<ActionAttribute> ().Select (attr => (attr, func)))
+    .Select ((x, i) => (i: i + 1, x.attr, x.func))
+    .ToDictionary(
+        x => x.attr.Key,
+        x => (
+            x.i,
+            title: x.attr.IsDelimiter ? "" : $"{Enum.GetName(x.attr.Key)} => {x.attr.Title}",
+            key: x.attr.Key,
+            x.func
+        )
+    );
 
-    foreach (var torrent in engine.Torrents.ToList())
+await ShowHelpAsync ();
+try
+{
+    while (!cancellationSource.IsCancellationRequested)
     {
-        Console.WriteLine($"{torrent.Name}: {torrent.Progress}");
-        if (torrent.Complete)
+        if (Console.KeyAvailable)
         {
-            await torrent.StopAsync();
-            await engine.RemoveAsync(torrent);
+            var keyInfo = Console.ReadKey (true);
+            await (
+                actions
+                    .TryGetValue (keyInfo.Key, out var action)
+                    ? action.func ()
+                    : Task.CompletedTask
+            );
         }
+
+        await HandleCompletedTorrentsAsync (engine);
+        await Task.Delay (1.Seconds ());
     }
-    await Task.Delay(1.Seconds());
+}
+catch (Exception error)
+{
+    Console.WriteLine ($"Error while running loop:\n{error}");
+}
+finally
+{
+    Console.WriteLine ($"Completed loop");
 }
 
-File.WriteAllBytes(Path.Combine(AppDir(), "mynodes"), (await engine.DhtEngine.SaveNodesAsync()).ToArray());
 await engine.SaveStateAsync(settingsFile);
 await engine.StopAllAsync();
 
@@ -130,7 +154,15 @@ static void DumpPeers(InfoHash infoHash, IEnumerable<PeerInfo> peers)
     => Console.WriteLine($"\nPeersFound | {infoHash.ToHex()} => {string.Join("", peers.Select(x => $"\n\t{x.PeerId} - {x.ConnectionUri}"))}\n");
 
 // Key action methods
-static async Task HandleFKeyAsync(ClientEngine engine, string saveDirectory)
+
+static async Task HandleSaveNodesAsync (ClientEngine engine, string appDir)
+{
+    var serializedNodes = (await engine.DhtEngine.SaveNodesAsync()).ToArray();
+    var pathToSaveNodes = Path.Combine(appDir, "mynodes");
+    File.WriteAllBytes(pathToSaveNodes, serializedNodes);
+}
+
+static async Task HandleStartDownloadTorrentsAsync(ClientEngine engine, string saveDirectory)
 {
     var torrentFiles = Directory
         .EnumerateFiles(TestTorrentsDir(), "*.torrent", SearchOption.AllDirectories)
@@ -142,12 +174,14 @@ static async Task HandleFKeyAsync(ClientEngine engine, string saveDirectory)
             continue;
 
         var torrent = await engine.AddAsync(torrentFile, saveDirectory);
+        AttachTorrentCompletionHandler (engine, torrent);
+
         await torrent.StartAsync();
         Console.WriteLine(torrent.Name);
     }
 }
 
-static async Task HandleSKeyAsync(ClientEngine engine, TorrentFileSource torrentFileSource, string sharedFileTorrentFile, string saveDirectory)
+static async Task HandleStartDownloadTorrentAsync(ClientEngine engine, TorrentFileSource torrentFileSource, string sharedFileTorrentFile, string saveDirectory)
 {
     var torrentCreator = new TorrentCreator(TorrentType.V2Only, Factories.Default)
     {
@@ -158,29 +192,98 @@ static async Task HandleSKeyAsync(ClientEngine engine, TorrentFileSource torrent
     };
     torrentCreator.Create(torrentFileSource, sharedFileTorrentFile);
     var torrent = await engine.AddAsync(sharedFileTorrentFile, saveDirectory);
+    AttachTorrentCompletionHandler (engine, torrent);
     await torrent.StartAsync();
     Console.WriteLine(torrent.Name);
 }
 
-static async Task HandleLKeyAsync(ClientEngine engine, InfoHash infoHashToAnnounce, string saveDirectory)
+static async Task HandleAnnounceInfoHashAsync(ClientEngine engine, InfoHash infoHashToAnnounce)
 {
-    // var magnetLink = new MagnetLink(infoHashToAnnounce);
-    // var torrentSettings = new TorrentSettingsBuilder(new())
-    //     {
-    //         AllowInitialSeeding = true
-    //     }
-    //     .ToSettings();
-    // var torrent = await engine.AddAsync(magnetLink, saveDirectory, torrentSettings);
-    // await torrent.StartAsync();
-    // Console.WriteLine(torrent.Name);
+    // engine.DhtEngine.Announce(infoHashToAnnounce, 0);
     await engine.AnnounceAsync (infoHashToAnnounce);
 }
 
-static async Task HandleMKeyAsync(ClientEngine engine, InfoHash infoHashToAnnounce)
+static async Task HandleLookupInfoHashAsync(ClientEngine engine, InfoHash infoHashToAnnounce)
 {
     var peers = await engine
         .GetPeersAsync(infoHashToAnnounce)
         .Take(1)
         .ToArrayAsync();
     DumpPeers(infoHashToAnnounce, peers);
+}
+
+static async Task HandleCompletedTorrentsAsync(ClientEngine engine)
+{
+    foreach (var torrent in engine.Torrents.ToList())
+    {
+        Console.WriteLine($"{torrent.Name}: {torrent.Progress}");
+        continue;
+
+        if (!torrent.Complete)
+            continue;
+
+        await torrent.StopAsync();
+        await engine.RemoveAsync(torrent);
+    }
+}
+
+static void AttachTorrentCompletionHandler (ClientEngine engine, TorrentManager tm)
+{
+    var eventHolder = new RefHolder<EventHandler<TorrentStateChangedEventArgs>>();
+    eventHolder.Target = TorrentOnTorrentStateChanged;
+    tm.TorrentStateChanged += eventHolder.Target;
+    return;
+
+    async void TorrentOnTorrentStateChanged (object sender, TorrentStateChangedEventArgs e)
+    {
+        var torrent = e.TorrentManager;
+        var torrentName = torrent.Name;
+        switch (e)
+        {
+            case {NewState: TorrentState.Error or TorrentState.Stopped or TorrentState.Seeding}:
+                LogTorrentStateChange();
+                if (e.TorrentManager.Complete)
+                {
+                    Console.WriteLine($"Completed: {torrentName}");
+                    if (torrent.State is not (TorrentState.Stopping or TorrentState.Stopped)) {
+                        await torrent.StopAsync ();
+                    }
+
+                    await engine.RemoveAsync (torrent);
+                    torrent.TorrentStateChanged -= eventHolder.Target;
+                }
+                break;
+
+            default:
+                LogTorrentStateChange();
+                break;
+        }
+
+        void LogTorrentStateChange()
+            => Console.WriteLine($"{torrentName}: {Enum.GetName(e.OldState)} => {Enum.GetName(e.NewState)}");
+    }
+}
+
+async Task SignalStopAsync(CancellationTokenSource cancellationTokenSource)
+{
+    cancellationTokenSource.Cancel();
+    await Task.CompletedTask;
+}
+
+async Task ShowHelpAsync()
+{
+    var lines = actions
+        .OrderBy (x => x.Value.i)
+        .Select (x => x.Value.title)
+        .ToList ();
+    await Console.Out.WriteLineAsync (
+        $"""
+         #====================================================
+         |  Now: {DateTime.Now:F}
+         |  MonoTorrent Experiments Help:
+         |
+         {string.Join(Environment.NewLine, lines.Select (x => $"|  {x}"))}
+         #====================================================
+         """
+    );
 }

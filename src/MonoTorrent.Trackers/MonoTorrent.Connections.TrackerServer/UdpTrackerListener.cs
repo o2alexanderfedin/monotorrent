@@ -138,7 +138,7 @@ namespace MonoTorrent.Connections.TrackerServer
 
             ReadOnlyMemory<byte> data = m.Encode ();
             try {
-                await client.SendAsync (data, data.Length, remotePeer);
+                await client.SendAsync (data, remotePeer);
             } catch {
             }
         }
@@ -200,7 +200,7 @@ namespace MonoTorrent.Connections.TrackerServer
                 m = new AnnounceResponseMessage (remotePeer.AddressFamily, announceMessage.TransactionId, interval, leechers, seeders, peers);
             }
             ReadOnlyMemory<byte> data = m.Encode ();
-            await client.SendAsync (data, data.Length, remotePeer);
+            await client.SendAsync (data, remotePeer);
         }
 
         NameValueCollection getCollection (AnnounceMessage announceMessage)
@@ -256,14 +256,14 @@ namespace MonoTorrent.Connections.TrackerServer
                     {
                         m = new ScrapeResponseMessage (scrapeMessage.TransactionId, scrapes);
                         data = m.Encode ();
-                        await client.SendAsync (data, data.Length, remotePeer);
+                        await client.SendAsync (data, remotePeer);
                         scrapes.Clear ();
                     }
                 }
                 m = new ScrapeResponseMessage (scrapeMessage.TransactionId, scrapes);
             }
             data = m.Encode ();
-            await client.SendAsync (data, data.Length, remotePeer);
+            await client.SendAsync (data, remotePeer);
         }
 
         NameValueCollection getCollection (ScrapeMessage scrapeMessage)
