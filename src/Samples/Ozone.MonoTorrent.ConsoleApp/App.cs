@@ -1,3 +1,4 @@
+using System.Net;
 using System.Reflection;
 
 using Humanizer;
@@ -14,14 +15,14 @@ using Ozone.MonoTorrent.ConsoleApp;
 // ReSharper disable HeapView.ObjectAllocation
 // ReSharper disable HeapView.ObjectAllocation.Evident
 
+Console.WriteLine(Environment.CommandLine);
 var hashToAnnounce = new byte[20];
 Random.Shared.NextBytes(hashToAnnounce);
 var infoHashToAnnounce = new InfoHash(hashToAnnounce);
 
-var sharedFile = SharedFile();
 var sharedFileTorrentFile = SharedFileTorrentFile();
-var torrentFileSource = new TorrentFileSource(sharedFile);
-if (File.Exists(sharedFileTorrentFile)) File.Delete(sharedFileTorrentFile);
+var torrentFileSource = new TorrentFileSource(sharedFileTorrentFile);
+// if (File.Exists(sharedFileTorrentFile)) File.Delete(sharedFileTorrentFile);
 
 var settingsFile = SettingsFile();
 var saveDirectory = Path.Combine(AppDir(), "incoming");
@@ -98,8 +99,15 @@ static async Task<ClientEngine> BuildEngine(string settingsFile)
 {
     try
     {
-        if (File.Exists(settingsFile))
-            return await ClientEngine.RestoreStateAsync(settingsFile);
+        if (File.Exists(settingsFile)) {
+            var clientEngine = await ClientEngine.RestoreStateAsync(settingsFile);
+            var settingsBuilder = new EngineSettingsBuilder (clientEngine.Settings)
+            {
+                AllowLocalPeerDiscovery = true
+            };
+            clientEngine = new ClientEngine(settingsBuilder.ToSettings());
+            return clientEngine;
+        }
     }
     catch (Exception error)
     {
@@ -115,7 +123,14 @@ static async Task<ClientEngine> BuildEngine(string settingsFile)
                 AllowPortForwarding = true,
                 CacheDirectory = Path.Combine(AppDir(), "cache"),
                 FastResumeMode = FastResumeMode.BestEffort,
-                ConnectionTimeout = 30.Seconds()
+                ConnectionTimeout = 30.Seconds(),
+                AllowLocalPeerDiscovery = true,
+                DhtEndPoint = new IPEndPoint(IPAddress.Any, 0),
+                ListenEndPoints = new()
+                {
+                    ["ip"] = new IPEndPoint (IPAddress.Any, 0),
+                    ["ipv6"] = new IPEndPoint (IPAddress.IPv6Any, 0),
+                }
             }
             .ToSettings();
         return new ClientEngine(settings);
@@ -128,26 +143,14 @@ static string TestTorrentsDir()
     return dir;
 }
 
-static string AppDir()
-{
-    var dir = Environment.CurrentDirectory;
-    Directory.CreateDirectory(dir);
-    return dir;
-}
-
-static string SharedFile()
-{
-    var file = Path.Combine(AppDir(), typeof(Anchor).Namespace);
-    return File.Exists(file)
-        ? file
-        : throw new FileNotFoundException(file);
-}
+static string AppDir() => Environment.CurrentDirectory;
 
 static string SharedFileTorrentFile()
 {
-    var name = Path.GetFileName(SharedFile());
-    var file = Path.Combine(TestTorrentsDir(), name + ".torrent");
-    return file;
+    var file = Path.Combine(TestTorrentsDir(), "ubuntu-24.10-desktop-amd64.iso.torrent");
+    return File.Exists(file)
+        ? file
+        : throw new FileNotFoundException(file);
 }
 
 static void DumpPeers(InfoHash infoHash, IEnumerable<PeerInfo> peers)
@@ -164,8 +167,9 @@ static async Task HandleSaveNodesAsync (ClientEngine engine, string appDir)
 
 static async Task HandleStartDownloadTorrentsAsync(ClientEngine engine, string saveDirectory)
 {
+    var testTorrentsDir = TestTorrentsDir();
     var torrentFiles = Directory
-        .EnumerateFiles(TestTorrentsDir(), "*.torrent", SearchOption.AllDirectories)
+        .EnumerateFiles(testTorrentsDir, "*.torrent", SearchOption.AllDirectories)
         .ToArray();
     foreach (var torrentFile in torrentFiles)
     {
@@ -190,8 +194,9 @@ static async Task HandleStartDownloadTorrentAsync(ClientEngine engine, TorrentFi
         StoreSHA1 = true,
         Publisher = "Oxygen",
     };
-    torrentCreator.Create(torrentFileSource, sharedFileTorrentFile);
-    var torrent = await engine.AddAsync(sharedFileTorrentFile, saveDirectory);
+    var savePath = sharedFileTorrentFile + ".copy";
+    torrentCreator.Create(torrentFileSource, savePath);
+    var torrent = await engine.AddAsync(savePath, saveDirectory);
     AttachTorrentCompletionHandler (engine, torrent);
     await torrent.StartAsync();
     Console.WriteLine(torrent.Name);
@@ -199,7 +204,6 @@ static async Task HandleStartDownloadTorrentAsync(ClientEngine engine, TorrentFi
 
 static async Task HandleAnnounceInfoHashAsync(ClientEngine engine, InfoHash infoHashToAnnounce)
 {
-    // engine.DhtEngine.Announce(infoHashToAnnounce, 0);
     await engine.AnnounceAsync (infoHashToAnnounce);
 }
 
